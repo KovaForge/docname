@@ -1,0 +1,2 @@
+/home/majk/.openclaw/docname/bin/Release/net10.0/linux-x64/publish/docname.pdb
+/home/majk/.openclaw/docname/bin/Release/net10.0/linux-x64/publish/docname
