@@ -50,11 +50,13 @@ listCommand.SetAction(_ =>
 var allocL2 = new Argument<string>("L2") { Description = "Level2 code, for example POL." };
 var allocL3 = new Argument<string>("L3") { Description = "Level3 code, for example MD." };
 var allocText = new Argument<string>("FreeText") { Description = "Document title text." };
+var previewOption = new Option<bool>("--preview", "-p") { Description = "Show the filename without allocating or committing to the database." };
 var allocCommand = new Command("alloc", "Allocates the next filename for the given Level2 and Level3 codes.")
 {
     allocL2,
     allocL3,
-    allocText
+    allocText,
+    previewOption
 };
 allocCommand.SetAction(parseResult =>
 {
@@ -70,14 +72,21 @@ allocCommand.SetAction(parseResult =>
         }
 
         using var connection = OpenConnection(dbPath);
+        EnsureLevel2Exists(connection, transaction: null, l2);
+        var nextNumber = GetNextNumber(connection, transaction: null, l2, l3, allocate: false);
+        var filename = BuildFilename(l2, l3, nextNumber, freeText);
+
+        if (parseResult.GetValue(previewOption))
+        {
+            Console.WriteLine($"[preview] {filename}");
+            return 0;
+        }
+
         using var transaction = connection.BeginTransaction();
-
-        EnsureLevel2Exists(connection, transaction, l2);
-
-        var nextNumber = GetNextNumber(connection, transaction, l2, l3, allocate: true);
+        GetNextNumber(connection, transaction, l2, l3, allocate: true);
         transaction.Commit();
 
-        Console.WriteLine(BuildFilename(l2, l3, nextNumber, freeText));
+        Console.WriteLine(filename);
         return 0;
     }
     catch (Exception ex)
