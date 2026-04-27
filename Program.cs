@@ -50,6 +50,8 @@ allocCommand.SetAction(parseResult =>
         InitializeDatabase(dbPath);
         var l2 = NormalizeCode(parseResult.GetValue(allocL2), "L2");
         var l3 = NormalizeCode(parseResult.GetValue(allocL3), "L3");
+        ValidateNonLevel1CodeLength(l2, "Level2");
+        ValidateNonLevel1CodeLength(l3, "Level3");
         var freeText = parseResult.GetValue(allocText)?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(freeText))
         {
@@ -95,6 +97,8 @@ nextCommand.SetAction(parseResult =>
         InitializeDatabase(dbPath);
         var l2 = NormalizeCode(parseResult.GetValue(nextL2), "L2");
         var l3 = NormalizeCode(parseResult.GetValue(nextL3), "L3");
+        ValidateNonLevel1CodeLength(l2, "Level2");
+        ValidateNonLevel1CodeLength(l3, "Level3");
 
         using var connection = OpenConnection(dbPath);
         EnsureLevel2Exists(connection, transaction: null, l2);
@@ -272,6 +276,7 @@ static IReadOnlyList<(string Code, string Description)> LoadCodes(string path, s
         }
 
         var code = NormalizeCode(parts[0], $"{codeKind} code");
+        ValidateNonLevel1CodeLength(code, codeKind);
         if (!seen.Add(code))
         {
             throw new InvalidOperationException($"Duplicate {codeKind} code in {path}: {code}");
@@ -297,6 +302,14 @@ static string NormalizeCode(string? input, string name)
     }
 
     return value;
+}
+
+static void ValidateNonLevel1CodeLength(string code, string codeKind)
+{
+    if (code.Length > 4)
+    {
+        throw new InvalidOperationException($"{codeKind} code exceeds 4 characters: {code}");
+    }
 }
 
 static void EnsureLevel2Exists(SqliteConnection connection, SqliteTransaction? transaction, string level2)
