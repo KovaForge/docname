@@ -5,7 +5,7 @@ using SQLitePCL;
 const string Level1 = "KF";
 var openClawDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".openclaw");
 var dbPath = Path.Combine(openClawDirectory, "docname.db");
-var level2CodesPath = ResolveCodesPath(openClawDirectory, "DOCNAME_CODES_FILE", "docname-codes.tsv", "codes.tsv");
+var level2CodesPath = ResolveCodesPath(openClawDirectory, "DOCNAME_LEVEL2_CODES_FILE", "docname-level2-codes.tsv", "level2-codes.tsv");
 var level3CodesPath = ResolveCodesPath(openClawDirectory, "DOCNAME_LEVEL3_CODES_FILE", "docname-level3-codes.tsv", "level3-codes.tsv");
 Batteries_V2.Init();
 
