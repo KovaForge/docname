@@ -1,0 +1,12 @@
+# docname Level2 codes
+# Format: CODE<TAB>Description
+# Blank lines and lines starting with # are ignored.
+POL	Policy
+STP	Standard/Procedure
+TMP	Template
+FRM	Form
+RPT	Report
+AUD	Audit
+REQ	Requirement
+SPC	Specification
+PROC	Process/Procedure

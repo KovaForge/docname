@@ -3,7 +3,9 @@ using System.CommandLine;
 using SQLitePCL;
 
 const string Level1 = "KF";
-var dbPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".openclaw", "docname.db");
+var openClawDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".openclaw");
+var dbPath = Path.Combine(openClawDirectory, "docname.db");
+var codesPath = ResolveCodesPath(openClawDirectory);
 Batteries_V2.Init();
 
 var root = new RootCommand("docname, controlled document filename allocator");
@@ -149,7 +151,7 @@ static SqliteConnection OpenConnection(string dbPath)
     return connection;
 }
 
-static void InitializeDatabase(string dbPath)
+void InitializeDatabase(string dbPath)
 {
     using var connection = OpenConnection(dbPath);
     using var command = connection.CreateCommand();
@@ -171,26 +173,95 @@ CREATE TABLE IF NOT EXISTS codes (
 ";
     command.ExecuteNonQuery();
 
-    var seeds = new (string Code, string Description)[]
-    {
-        ("POL", "Policy"),
-        ("STP", "Standard/Procedure"),
-        ("TMP", "Template"),
-        ("FRM", "Form"),
-        ("RPT", "Report"),
-        ("AUD", "Audit"),
-        ("REQ", "Requirement"),
-        ("SPC", "Specification")
-    };
-
-    foreach (var seed in seeds)
+    foreach (var code in LoadCodes(codesPath))
     {
         using var seedCommand = connection.CreateCommand();
         seedCommand.CommandText = "INSERT INTO codes (level2, description) VALUES ($level2, $description) ON CONFLICT(level2) DO UPDATE SET description = excluded.description";
-        seedCommand.Parameters.AddWithValue("$level2", seed.Code);
-        seedCommand.Parameters.AddWithValue("$description", seed.Description);
+        seedCommand.Parameters.AddWithValue("$level2", code.Code);
+        seedCommand.Parameters.AddWithValue("$description", code.Description);
         seedCommand.ExecuteNonQuery();
     }
+}
+
+static string ResolveCodesPath(string openClawDirectory)
+{
+    var overridePath = Environment.GetEnvironmentVariable("DOCNAME_CODES_FILE");
+    if (!string.IsNullOrWhiteSpace(overridePath))
+    {
+        return ExpandHome(overridePath);
+    }
+
+    var userPath = Path.Combine(openClawDirectory, "docname-codes.tsv");
+    if (File.Exists(userPath))
+    {
+        return userPath;
+    }
+
+    var appPath = Path.Combine(AppContext.BaseDirectory, "codes.tsv");
+    if (File.Exists(appPath))
+    {
+        return appPath;
+    }
+
+    var workingDirectoryPath = Path.Combine(Environment.CurrentDirectory, "codes.tsv");
+    if (File.Exists(workingDirectoryPath))
+    {
+        return workingDirectoryPath;
+    }
+
+    throw new FileNotFoundException(
+        "No docname codes file found. Create ~/.openclaw/docname-codes.tsv, set DOCNAME_CODES_FILE, or place codes.tsv beside the docname binary.");
+}
+
+static string ExpandHome(string path)
+{
+    if (path == "~")
+    {
+        return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    }
+
+    if (path.StartsWith("~/", StringComparison.Ordinal))
+    {
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path[2..]);
+    }
+
+    return path;
+}
+
+static IReadOnlyList<(string Code, string Description)> LoadCodes(string path)
+{
+    var codes = new List<(string Code, string Description)>();
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var rawLine in File.ReadLines(path))
+    {
+        var line = rawLine.Trim();
+        if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#'))
+        {
+            continue;
+        }
+
+        var parts = line.Split('\t', 2, StringSplitOptions.TrimEntries);
+        if (parts.Length != 2 || string.IsNullOrWhiteSpace(parts[0]) || string.IsNullOrWhiteSpace(parts[1]))
+        {
+            throw new InvalidOperationException($"Invalid codes file line in {path}: '{rawLine}'. Expected CODE<TAB>Description.");
+        }
+
+        var code = NormalizeCode(parts[0], "Level2 code");
+        if (!seen.Add(code))
+        {
+            throw new InvalidOperationException($"Duplicate Level2 code in {path}: {code}");
+        }
+
+        codes.Add((code, parts[1].Trim()));
+    }
+
+    if (codes.Count == 0)
+    {
+        throw new InvalidOperationException($"Codes file contains no Level2 codes: {path}");
+    }
+
+    return codes;
 }
 
 static string NormalizeCode(string? input, string name)

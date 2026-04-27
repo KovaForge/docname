@@ -15,4 +15,11 @@
     <PackageReference Include="System.CommandLine" Version="2.0.5" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="codes.tsv">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>
