@@ -9,6 +9,8 @@ var level2CodesPath = ResolveCodesPath(openClawDirectory, "DOCNAME_LEVEL2_CODES_
 var level3CodesPath = ResolveCodesPath(openClawDirectory, "DOCNAME_LEVEL3_CODES_FILE", "docname-level3-codes.tsv", "level3-codes.tsv");
 Batteries_V2.Init();
 
+ValidateLevel1CodeLength(Level1);
+
 var root = new RootCommand("docname, controlled document filename allocator");
 
 var initCommand = new Command("init", "Creates or refreshes the SQLite database and seeds Level2/Level3 codes.");
@@ -156,7 +158,9 @@ CREATE TABLE IF NOT EXISTS level3_codes (
 ";
     command.ExecuteNonQuery();
 
-    foreach (var code in LoadCodes(level2CodesPath, "Level2"))
+    var level2Codes = LoadCodes(level2CodesPath, "Level2");
+    DeleteStaleCodes(connection, "codes", "level2", level2Codes.Select(code => code.Code));
+    foreach (var code in level2Codes)
     {
         using var seedCommand = connection.CreateCommand();
         seedCommand.CommandText = "INSERT INTO codes (level2, description) VALUES ($level2, $description) ON CONFLICT(level2) DO UPDATE SET description = excluded.description";
@@ -165,7 +169,9 @@ CREATE TABLE IF NOT EXISTS level3_codes (
         seedCommand.ExecuteNonQuery();
     }
 
-    foreach (var code in LoadCodes(level3CodesPath, "Level3"))
+    var level3Codes = LoadCodes(level3CodesPath, "Level3");
+    DeleteStaleCodes(connection, "level3_codes", "level3", level3Codes.Select(code => code.Code));
+    foreach (var code in level3Codes)
     {
         using var seedCommand = connection.CreateCommand();
         seedCommand.CommandText = "INSERT INTO level3_codes (level3, description) VALUES ($level3, $description) ON CONFLICT(level3) DO UPDATE SET description = excluded.description";
@@ -173,6 +179,20 @@ CREATE TABLE IF NOT EXISTS level3_codes (
         seedCommand.Parameters.AddWithValue("$description", code.Description);
         seedCommand.ExecuteNonQuery();
     }
+}
+
+static void DeleteStaleCodes(SqliteConnection connection, string tableName, string columnName, IEnumerable<string> activeCodes)
+{
+    var codes = activeCodes.ToArray();
+    using var command = connection.CreateCommand();
+    command.CommandText = $"DELETE FROM {tableName} WHERE {columnName} NOT IN ({string.Join(", ", codes.Select((_, index) => $"$code{index}"))})";
+
+    for (var i = 0; i < codes.Length; i++)
+    {
+        command.Parameters.AddWithValue($"$code{i}", codes[i]);
+    }
+
+    command.ExecuteNonQuery();
 }
 
 int ListCodes(string dbPath, string tableName, string codeColumn)
@@ -304,8 +324,21 @@ static string NormalizeCode(string? input, string name)
     return value;
 }
 
+static void ValidateLevel1CodeLength(string code)
+{
+    if (code.Length < 2)
+    {
+        throw new InvalidOperationException($"Level1 code must be at least 2 characters: {code}");
+    }
+}
+
 static void ValidateNonLevel1CodeLength(string code, string codeKind)
 {
+    if (code.Length < 3)
+    {
+        throw new InvalidOperationException($"{codeKind} code must be at least 3 characters: {code}");
+    }
+
     if (code.Length > 4)
     {
         throw new InvalidOperationException($"{codeKind} code exceeds 4 characters: {code}");
