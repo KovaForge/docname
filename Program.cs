@@ -5,12 +5,13 @@ using SQLitePCL;
 const string Level1 = "KF";
 var openClawDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".openclaw");
 var dbPath = Path.Combine(openClawDirectory, "docname.db");
-var codesPath = ResolveCodesPath(openClawDirectory);
+var level2CodesPath = ResolveCodesPath(openClawDirectory, "DOCNAME_CODES_FILE", "docname-codes.tsv", "codes.tsv");
+var level3CodesPath = ResolveCodesPath(openClawDirectory, "DOCNAME_LEVEL3_CODES_FILE", "docname-level3-codes.tsv", "level3-codes.tsv");
 Batteries_V2.Init();
 
 var root = new RootCommand("docname, controlled document filename allocator");
 
-var initCommand = new Command("init", "Creates or refreshes the SQLite database and seeds Level2 codes.");
+var initCommand = new Command("init", "Creates or refreshes the SQLite database and seeds Level2/Level3 codes.");
 initCommand.SetAction(_ =>
 {
     try
@@ -26,28 +27,10 @@ initCommand.SetAction(_ =>
 });
 
 var listCommand = new Command("list", "Lists all known Level2 codes and their descriptions.");
-listCommand.SetAction(_ =>
-{
-    try
-    {
-        InitializeDatabase(dbPath);
-        using var connection = OpenConnection(dbPath);
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT level2, description FROM codes ORDER BY level2";
+listCommand.SetAction(_ => ListCodes(dbPath, "codes", "level2"));
 
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            Console.WriteLine($"{reader.GetString(0)}\t{reader.GetString(1)}");
-        }
-
-        return 0;
-    }
-    catch (Exception ex)
-    {
-        return Fail(ex.Message);
-    }
-});
+var listLevel3Command = new Command("list-l3", "Lists all known Level3 codes and their descriptions.");
+listLevel3Command.SetAction(_ => ListCodes(dbPath, "level3_codes", "level3"));
 
 var allocL2 = new Argument<string>("L2") { Description = "Level2 code, for example POL." };
 var allocL3 = new Argument<string>("L3") { Description = "Level3 code, for example MD." };
@@ -75,6 +58,7 @@ allocCommand.SetAction(parseResult =>
 
         using var connection = OpenConnection(dbPath);
         EnsureLevel2Exists(connection, transaction: null, l2);
+        EnsureLevel3Exists(connection, transaction: null, l3);
         var nextNumber = GetNextNumber(connection, transaction: null, l2, l3, allocate: false);
         var filename = BuildFilename(l2, l3, nextNumber, freeText);
 
@@ -114,6 +98,7 @@ nextCommand.SetAction(parseResult =>
 
         using var connection = OpenConnection(dbPath);
         EnsureLevel2Exists(connection, transaction: null, l2);
+        EnsureLevel3Exists(connection, transaction: null, l3);
         var nextNumber = GetNextNumber(connection, transaction: null, l2, l3, allocate: false);
 
         Console.WriteLine($"Next number for {Level1}-{l2}-{l3}: {nextNumber:000}");
@@ -127,6 +112,7 @@ nextCommand.SetAction(parseResult =>
 
 root.Subcommands.Add(initCommand);
 root.Subcommands.Add(listCommand);
+root.Subcommands.Add(listLevel3Command);
 root.Subcommands.Add(allocCommand);
 root.Subcommands.Add(nextCommand);
 
@@ -136,19 +122,6 @@ static int Fail(string message)
 {
     Console.Error.WriteLine($"Error: {message}");
     return 1;
-}
-
-static SqliteConnection OpenConnection(string dbPath)
-{
-    var directory = Path.GetDirectoryName(dbPath);
-    if (!string.IsNullOrWhiteSpace(directory))
-    {
-        Directory.CreateDirectory(directory);
-    }
-
-    var connection = new SqliteConnection($"Data Source={dbPath}");
-    connection.Open();
-    return connection;
 }
 
 void InitializeDatabase(string dbPath)
@@ -170,10 +143,16 @@ CREATE TABLE IF NOT EXISTS codes (
     level2 TEXT NOT NULL UNIQUE,
     description TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS level3_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    level3 TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL
+);
 ";
     command.ExecuteNonQuery();
 
-    foreach (var code in LoadCodes(codesPath))
+    foreach (var code in LoadCodes(level2CodesPath, "Level2"))
     {
         using var seedCommand = connection.CreateCommand();
         seedCommand.CommandText = "INSERT INTO codes (level2, description) VALUES ($level2, $description) ON CONFLICT(level2) DO UPDATE SET description = excluded.description";
@@ -181,36 +160,81 @@ CREATE TABLE IF NOT EXISTS codes (
         seedCommand.Parameters.AddWithValue("$description", code.Description);
         seedCommand.ExecuteNonQuery();
     }
+
+    foreach (var code in LoadCodes(level3CodesPath, "Level3"))
+    {
+        using var seedCommand = connection.CreateCommand();
+        seedCommand.CommandText = "INSERT INTO level3_codes (level3, description) VALUES ($level3, $description) ON CONFLICT(level3) DO UPDATE SET description = excluded.description";
+        seedCommand.Parameters.AddWithValue("$level3", code.Code);
+        seedCommand.Parameters.AddWithValue("$description", code.Description);
+        seedCommand.ExecuteNonQuery();
+    }
 }
 
-static string ResolveCodesPath(string openClawDirectory)
+int ListCodes(string dbPath, string tableName, string codeColumn)
 {
-    var overridePath = Environment.GetEnvironmentVariable("DOCNAME_CODES_FILE");
+    try
+    {
+        InitializeDatabase(dbPath);
+        using var connection = OpenConnection(dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT {codeColumn}, description FROM {tableName} ORDER BY {codeColumn}";
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            Console.WriteLine($"{reader.GetString(0)}\t{reader.GetString(1)}");
+        }
+
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        return Fail(ex.Message);
+    }
+}
+
+static SqliteConnection OpenConnection(string dbPath)
+{
+    var directory = Path.GetDirectoryName(dbPath);
+    if (!string.IsNullOrWhiteSpace(directory))
+    {
+        Directory.CreateDirectory(directory);
+    }
+
+    var connection = new SqliteConnection($"Data Source={dbPath}");
+    connection.Open();
+    return connection;
+}
+
+static string ResolveCodesPath(string openClawDirectory, string environmentVariableName, string userFileName, string packagedFileName)
+{
+    var overridePath = Environment.GetEnvironmentVariable(environmentVariableName);
     if (!string.IsNullOrWhiteSpace(overridePath))
     {
         return ExpandHome(overridePath);
     }
 
-    var userPath = Path.Combine(openClawDirectory, "docname-codes.tsv");
+    var userPath = Path.Combine(openClawDirectory, userFileName);
     if (File.Exists(userPath))
     {
         return userPath;
     }
 
-    var appPath = Path.Combine(AppContext.BaseDirectory, "codes.tsv");
+    var appPath = Path.Combine(AppContext.BaseDirectory, packagedFileName);
     if (File.Exists(appPath))
     {
         return appPath;
     }
 
-    var workingDirectoryPath = Path.Combine(Environment.CurrentDirectory, "codes.tsv");
+    var workingDirectoryPath = Path.Combine(Environment.CurrentDirectory, packagedFileName);
     if (File.Exists(workingDirectoryPath))
     {
         return workingDirectoryPath;
     }
 
     throw new FileNotFoundException(
-        "No docname codes file found. Create ~/.openclaw/docname-codes.tsv, set DOCNAME_CODES_FILE, or place codes.tsv beside the docname binary.");
+        $"No docname codes file found for {packagedFileName}. Create ~/.openclaw/{userFileName}, set {environmentVariableName}, or place {packagedFileName} beside the docname binary.");
 }
 
 static string ExpandHome(string path)
@@ -228,7 +252,7 @@ static string ExpandHome(string path)
     return path;
 }
 
-static IReadOnlyList<(string Code, string Description)> LoadCodes(string path)
+static IReadOnlyList<(string Code, string Description)> LoadCodes(string path, string codeKind)
 {
     var codes = new List<(string Code, string Description)>();
     var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -247,10 +271,10 @@ static IReadOnlyList<(string Code, string Description)> LoadCodes(string path)
             throw new InvalidOperationException($"Invalid codes file line in {path}: '{rawLine}'. Expected CODE<TAB>Description.");
         }
 
-        var code = NormalizeCode(parts[0], "Level2 code");
+        var code = NormalizeCode(parts[0], $"{codeKind} code");
         if (!seen.Add(code))
         {
-            throw new InvalidOperationException($"Duplicate Level2 code in {path}: {code}");
+            throw new InvalidOperationException($"Duplicate {codeKind} code in {path}: {code}");
         }
 
         codes.Add((code, parts[1].Trim()));
@@ -258,7 +282,7 @@ static IReadOnlyList<(string Code, string Description)> LoadCodes(string path)
 
     if (codes.Count == 0)
     {
-        throw new InvalidOperationException($"Codes file contains no Level2 codes: {path}");
+        throw new InvalidOperationException($"Codes file contains no {codeKind} codes: {path}");
     }
 
     return codes;
@@ -277,15 +301,32 @@ static string NormalizeCode(string? input, string name)
 
 static void EnsureLevel2Exists(SqliteConnection connection, SqliteTransaction? transaction, string level2)
 {
+    EnsureCodeExists(connection, transaction, "codes", "level2", level2, "Level2", "docname list");
+}
+
+static void EnsureLevel3Exists(SqliteConnection connection, SqliteTransaction? transaction, string level3)
+{
+    EnsureCodeExists(connection, transaction, "level3_codes", "level3", level3, "Level3", "docname list-l3");
+}
+
+static void EnsureCodeExists(
+    SqliteConnection connection,
+    SqliteTransaction? transaction,
+    string tableName,
+    string columnName,
+    string code,
+    string codeKind,
+    string listCommand)
+{
     using var command = connection.CreateCommand();
     command.Transaction = transaction;
-    command.CommandText = "SELECT COUNT(1) FROM codes WHERE level2 = $level2";
-    command.Parameters.AddWithValue("$level2", level2);
+    command.CommandText = $"SELECT COUNT(1) FROM {tableName} WHERE {columnName} = $code";
+    command.Parameters.AddWithValue("$code", code);
 
     var exists = Convert.ToInt32(command.ExecuteScalar()) > 0;
     if (!exists)
     {
-        throw new InvalidOperationException($"Unknown Level2 code: {level2}. Run 'docname list' or 'docname init'.");
+        throw new InvalidOperationException($"Unknown {codeKind} code: {code}. Run '{listCommand}' or update the relevant codes TSV file.");
     }
 }
 
