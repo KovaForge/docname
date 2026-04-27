@@ -339,9 +339,9 @@ static void ValidateNonLevel1CodeLength(string code, string codeKind)
         throw new InvalidOperationException($"{codeKind} code must be at least 3 characters: {code}");
     }
 
-    if (code.Length > 4)
+    if (code.Length > 3)
     {
-        throw new InvalidOperationException($"{codeKind} code exceeds 4 characters: {code}");
+        throw new InvalidOperationException($"{codeKind} code exceeds 3 characters: {code}");
     }
 }
 
