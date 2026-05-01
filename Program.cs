@@ -3,14 +3,14 @@ using System.CommandLine;
 using SQLitePCL;
 using System.Text.RegularExpressions;
 
-const string Level1 = "KF";
+const string Level1 = "KVF";
 var openClawDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".openclaw");
 var dbPath = Path.Combine(openClawDirectory, "docname.db");
 var level2CodesPath = ResolveCodesPath(openClawDirectory, "DOCNAME_LEVEL2_CODES_FILE", "docname-level2-codes.tsv", "level2-codes.tsv");
 var level3CodesPath = ResolveCodesPath(openClawDirectory, "DOCNAME_LEVEL3_CODES_FILE", "docname-level3-codes.tsv", "level3-codes.tsv");
 Batteries_V2.Init();
 
-ValidateLevel1CodeLength(Level1);
+ValidateThreeCharacterCode(Level1, "Level1");
 
 var root = new RootCommand("docname, controlled document filename allocator");
 
@@ -63,8 +63,8 @@ allocCommand.SetAction(parseResult =>
         InitializeDatabase(dbPath);
         var l2 = NormalizeCode(parseResult.GetValue(allocL2), "L2");
         var l3 = NormalizeCode(parseResult.GetValue(allocL3), "L3");
-        ValidateNonLevel1CodeLength(l2, "Level2");
-        ValidateNonLevel1CodeLength(l3, "Level3");
+        ValidateThreeCharacterCode(l2, "Level2");
+        ValidateThreeCharacterCode(l3, "Level3");
         var freeText = parseResult.GetValue(allocText)?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(freeText))
         {
@@ -111,8 +111,8 @@ nextCommand.SetAction(parseResult =>
         InitializeDatabase(dbPath);
         var l2 = NormalizeCode(parseResult.GetValue(nextL2), "L2");
         var l3 = NormalizeCode(parseResult.GetValue(nextL3), "L3");
-        ValidateNonLevel1CodeLength(l2, "Level2");
-        ValidateNonLevel1CodeLength(l3, "Level3");
+        ValidateThreeCharacterCode(l2, "Level2");
+        ValidateThreeCharacterCode(l3, "Level3");
 
         using var connection = OpenConnection(dbPath);
         EnsureLevel2Exists(connection, transaction: null, l2);
@@ -150,7 +150,7 @@ void InitializeDatabase(string dbPath)
     command.CommandText = @"
 CREATE TABLE IF NOT EXISTS counters (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    level1 TEXT NOT NULL DEFAULT 'KF',
+    level1 TEXT NOT NULL DEFAULT 'KVF',
     level2 TEXT NOT NULL,
     level3 TEXT NOT NULL,
     last_number INTEGER NOT NULL DEFAULT 0,
@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS level3_codes (
 
 CREATE TABLE IF NOT EXISTS allocations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    level1 TEXT NOT NULL DEFAULT 'KF',
+    level1 TEXT NOT NULL DEFAULT 'KVF',
     level2 TEXT NOT NULL,
     level3 TEXT NOT NULL,
     number INTEGER NOT NULL,
@@ -182,6 +182,7 @@ CREATE TABLE IF NOT EXISTS allocations (
 );
 ";
     command.ExecuteNonQuery();
+    MigrateLegacyRows(connection);
 
     var level2Codes = LoadCodes(level2CodesPath, "Level2");
     DeleteStaleCodes(connection, "codes", "level2", level2Codes.Select(code => code.Code));
@@ -218,6 +219,78 @@ static void DeleteStaleCodes(SqliteConnection connection, string tableName, stri
     }
 
     command.ExecuteNonQuery();
+}
+
+static void MigrateLegacyRows(SqliteConnection connection)
+{
+    using var transaction = connection.BeginTransaction();
+
+    using (var command = connection.CreateCommand())
+    {
+        command.Transaction = transaction;
+        command.CommandText = @"
+CREATE TEMP TABLE counters_migrated AS
+SELECT
+    CASE level1 WHEN 'KF' THEN 'KVF' ELSE level1 END AS level1,
+    CASE level2 WHEN 'PROC' THEN 'PRC' ELSE level2 END AS level2,
+    CASE level3 WHEN 'MD' THEN 'MDD' ELSE level3 END AS level3,
+    MAX(last_number) AS last_number
+FROM counters
+GROUP BY 1, 2, 3;
+
+DELETE FROM counters;
+
+INSERT INTO counters (level1, level2, level3, last_number)
+SELECT level1, level2, level3, last_number
+FROM counters_migrated
+WHERE length(level1) = 3 AND length(level2) = 3 AND length(level3) = 3;
+
+DROP TABLE counters_migrated;";
+        command.ExecuteNonQuery();
+    }
+
+    using (var command = connection.CreateCommand())
+    {
+        command.Transaction = transaction;
+        command.CommandText = @"
+CREATE TEMP TABLE allocations_migrated AS
+SELECT
+    id,
+    CASE level1 WHEN 'KF' THEN 'KVF' ELSE level1 END AS level1,
+    CASE level2 WHEN 'PROC' THEN 'PRC' ELSE level2 END AS level2,
+    CASE level3 WHEN 'MD' THEN 'MDD' ELSE level3 END AS level3,
+    number,
+    free_text,
+    CASE
+        WHEN filename LIKE 'KF-%' THEN 'KVF-' || substr(filename, 4)
+        ELSE filename
+    END AS filename,
+    created_at
+FROM allocations;
+
+CREATE TEMP TABLE allocations_keep AS
+SELECT migrated.*
+FROM allocations_migrated migrated
+JOIN (
+    SELECT level1, level2, level3, number, MAX(id) AS id
+    FROM allocations_migrated
+    WHERE length(level1) = 3 AND length(level2) = 3 AND length(level3) = 3
+    GROUP BY level1, level2, level3, number
+) keep
+ON migrated.id = keep.id;
+
+DELETE FROM allocations;
+
+INSERT INTO allocations (level1, level2, level3, number, free_text, filename, created_at)
+SELECT level1, level2, level3, number, free_text, filename, created_at
+FROM allocations_keep;
+
+DROP TABLE allocations_keep;
+DROP TABLE allocations_migrated;";
+        command.ExecuteNonQuery();
+    }
+
+    transaction.Commit();
 }
 
 int ListCodes(string dbPath, string tableName, string codeColumn)
@@ -294,7 +367,7 @@ int ListGeneratedNames(string dbPath, string? scanDirectory)
 
 static bool IsControlledDocumentFilename(string filename)
 {
-    return Regex.IsMatch(filename, @"^KF-[A-Z0-9]{3}-[A-Z0-9]{3}-\d{3}_[A-Za-z0-9_-]+\.md$", RegexOptions.CultureInvariant);
+    return Regex.IsMatch(filename, @"^[A-Z0-9]{3}-[A-Z0-9]{3}-[A-Z0-9]{3}-\d{3}_[A-Za-z0-9_-]+\.md$", RegexOptions.CultureInvariant);
 }
 
 static SqliteConnection OpenConnection(string dbPath)
@@ -375,7 +448,7 @@ static IReadOnlyList<(string Code, string Description)> LoadCodes(string path, s
         }
 
         var code = NormalizeCode(parts[0], $"{codeKind} code");
-        ValidateNonLevel1CodeLength(code, codeKind);
+        ValidateThreeCharacterCode(code, codeKind);
         if (!seen.Add(code))
         {
             throw new InvalidOperationException($"Duplicate {codeKind} code in {path}: {code}");
@@ -403,24 +476,11 @@ static string NormalizeCode(string? input, string name)
     return value;
 }
 
-static void ValidateLevel1CodeLength(string code)
+static void ValidateThreeCharacterCode(string code, string codeKind)
 {
-    if (code.Length < 2)
+    if (code.Length != 3)
     {
-        throw new InvalidOperationException($"Level1 code must be at least 2 characters: {code}");
-    }
-}
-
-static void ValidateNonLevel1CodeLength(string code, string codeKind)
-{
-    if (code.Length < 3)
-    {
-        throw new InvalidOperationException($"{codeKind} code must be at least 3 characters: {code}");
-    }
-
-    if (code.Length > 3)
-    {
-        throw new InvalidOperationException($"{codeKind} code exceeds 3 characters: {code}");
+        throw new InvalidOperationException($"{codeKind} code must be exactly 3 characters: {code}");
     }
 }
 
